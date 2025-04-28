@@ -1,0 +1,12 @@
+Workflow Instructions
+
+
+1- Download the codes from GitHub and the datasets from Zenodo.
+2- Extract the datasets into the corresponding Data folder.
+Pre-processing
+3- Run the main script located in the Average or Instantaneous binning folder, select your preferred bin size.
+Processing
+4- After completing the pre-processing steps, you can proceed to run the Patch POD script (Main_Patch_POD_cube).
+
+Note:
+You only need to repeat the pre-processing steps if you wish to change the selected bin size.

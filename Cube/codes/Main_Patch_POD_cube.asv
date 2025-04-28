@@ -1,0 +1,242 @@
+% Code from: "Full-domain POD modes from PIV asynchronous patches"
+% Authors: I.Tirelli, A.Grille Guerra, A.Ianiro, A.Sciacchitano, F.Scarano, S.Discetti.
+
+% This is the main file, to process data from robotic PIV measurements.
+% Is the same used for the  validation of the paper. This code works
+% with the  data available on Zenodo, feel free to edit in order to work
+% with your data!
+
+
+%% Settings
+b = 40; % bin size [mm]
+grid_name =  ['../Grid_b' num2str(b) '.mat'];
+load(grid_name) % load the global grid where you want your data
+Np = numel(X);
+[nx,ny,nz]=size(X); % grid dimension
+seq_patch = 1:35; % patch sequence
+Npatch = numel(seq_patch);
+Ntp = 1000; % number of snapshots per patch
+D = 120; % Diameter in mm for dimensionless coordinate
+
+% parametrs for the randomized SVD
+rank=300;
+over=10;
+
+%% ASSEMBLING REFERENCE 
+refName = ['../Reference_b' num2str(b) '.mat'];
+if exist(fullfile(pwd, refName), 'file')
+    fprintf('Reference PIV found. Loading data...\n');
+    load(fullfile(pwd, refName));
+else
+    fprintf('\n');
+    disp('Assembling reference');
+    targetDirectory = ['..\Monolithic\Instantaneous binning\Output\b' num2str(b) 'mm\'];
+    % Use the dir function to list the contents of the current directory
+    listing = dir(targetDirectory );
+    
+    % Initialize an empty cell array to store folder names
+    folderNames = {};
+    
+    % Loop through the listing and identify folder names
+    for i = 1:length(listing)
+        if  ~strcmp(listing(i).name, '.') && ~strcmp(listing(i).name, '..')
+            folderNames = [folderNames, {listing(i).name}];
+        end
+    end
+    
+    Nseq = numel(folderNames);
+    
+    % initialization of variables
+    U_ref = zeros([size(X) 10000]); % global u velocity
+    V_ref = zeros([size(X) 10000]);  % global v velocity
+    W_ref = zeros([size(X) 10000]);  % global w velocity
+    
+    cont = 1;
+    Nt = 5000; % number of snapshot in each sequence
+    for i = 1:Nseq
+        fprintf('\n');
+        disp(['Loading seq ' num2str(i)]);
+        name = strcat([targetDirectory,folderNames{i}]);
+        Seq = load(name);
+        fprintf('Snapshot:         ');
+        % assembling single sequence
+        for j = 1:Nt
+            fprintf('\b\b\b\b\b%05d', j);
+            name_patch = sprintf('snapshot_%d', j);
+            u = Seq.Output.(name_patch).u;
+            v = Seq.Output.(name_patch).v;
+            w = Seq.Output.(name_patch).w;
+            % transfering patches velocity to the global reference system
+            U_ref(:,:,:,cont) = u;
+            V_ref(:,:,:,cont) = v;
+            W_ref(:,:,:,cont) = w;
+            cont = cont + 1;
+        end
+        
+    end
+    
+    % reshaping velocity matrices and computing mean
+    U_ref = reshape(U_ref,[size(X,1)*size(X,2)*size(X,3) size(U_ref,4)]);
+    Um = mean(U_ref,2,'omitnan');
+    
+    V_ref = reshape(V_ref,[size(X,1)*size(X,2)*size(X,3) size(V_ref,4)]);
+    Vm = mean(V_ref,2,'omitnan');
+    
+    W_ref = reshape(W_ref,[size(X,1)*size(X,2)*size(X,3) size(W_ref,4)]);
+    Wm = mean(W_ref,2,'omitnan');
+    save(refName,'U_ref','Um','V_ref','Vm', 'W_ref','Wm','-v7.3');
+    
+end
+
+% computing fluctuating fields
+u_ref = U_ref-Um;
+v_ref = V_ref-Vm;
+w_ref = W_ref-Wm;
+u_ref(isnan(u_ref)) = 0;
+v_ref(isnan(v_ref)) = 0;
+w_ref(isnan(w_ref)) = 0;
+% computing spatial correlation matrix
+clear U_ref V_ref W_ref
+uu = [u_ref;v_ref;w_ref];
+C_ref = uu*uu';
+fprintf('\n');
+disp('SVD...');
+C_ref(isnan(C_ref))=0;
+
+[Phi_ref,Eig_ref,~]=randomizedSVD(C_ref,rank,over);
+
+%% LOADING DATA FROM PATCHES
+
+patchName = ['Patched_b' num2str(b) '.mat'];
+if exist(fullfile(pwd, patchName), 'file')
+    fprintf('Patched PIV found. Loading data...\n');
+    load(fullfile(pwd, 'Ru'));
+else
+    % Define the path of the directory you want to list folders from
+    disp('Starting Patch POD ');
+    targetDirectory = ['..\Robotic\Instantaneous binning\Output\b' num2str(b) 'mm\'];
+    addpath ('..\randomized SVD');
+    
+    % Use the dir function to list the contents of the current directory
+    listing = dir(targetDirectory );
+    
+    % Initialize an empty cell array to store folder names
+    folderNames = {};
+    
+    % Loop through the listing and identify folder names
+    for i = 1:length(listing)
+        if  ~strcmp(listing(i).name, '.') && ~strcmp(listing(i).name, '..')
+            folderNames = [folderNames, {listing(i).name}];
+        end
+    end
+    
+    
+    % initialization of variables
+    U_p = zeros([size(X) Ntp*Npatch]); % global u velocity (patched)
+    V_p = zeros([size(X) Ntp*Npatch]);  % global v velocity (patched)
+    W_p = zeros([size(X) Ntp*Npatch]);  % global w velocity (patched)
+    Flag = zeros([size(X) Ntp*Npatch]); % Flag matrix 1-data 0-no data
+   
+    x_v = squeeze(X(1,:,1));
+    y_v = squeeze(Y(:,1,1));
+    z_v = squeeze(Z(1,1,:));
+    
+    %% ASSEMBLING MATRICES
+    cont = 1; % to count the number of snapshot in the global framework
+    
+    for i = seq_patch
+        fprintf('\n');
+        disp(['Loading cone ' num2str(i)]);
+        name = strcat([targetDirectory,folderNames{i}]);
+        Patch = load(name);
+        fprintf('Snapshot:         ');
+        % assembling single patch
+        for j = 1:Ntp
+            fprintf('\b\b\b\b\b%05d', j);
+            name_patch = sprintf('snapshot_%d', j);
+            u = Patch.Output.(name_patch).u;
+            v = Patch.Output.(name_patch).v;
+            w = Patch.Output.(name_patch).w;
+            indices = find(~isnan(u));
+            
+            % Convert linear indices to subscripts (3D coordinates)
+            [ii, jj, kk] = ind2sub(size(u), indices);
+            F_patch = zeros(size(u, 1), size(u, 2), size(u, 3)); % Flag matrix for ONE PATCH
+            F_patch(sub2ind(size(F_patch), ii, jj, kk)) = 1; % Assembling Flag matrix
+            
+            % transfering patches velocity to the global reference system
+            U_p(:,:,:,cont) = u;
+            V_p(:,:,:,cont) = v;
+            W_p(:,:,:,cont) = w;
+            Flag(:,:,:,cont) = F_patch;
+            cont = cont+1;
+            
+            
+        end
+        
+        
+    end
+    
+    Flag = reshape(Flag,[size(X,1)*size(X,2)*size(X,3) size(U_p,4)]);
+    % reshaping velocity matrices and computing mean
+    U_p = reshape(U_p,[size(X,1)*size(X,2)*size(X,3) size(U_p,4)]);
+    U_p(U_p ==0) = nan;
+    Um_p = mean(U_p,2,'omitnan');
+    
+    V_p = reshape(V_p,[size(X,1)*size(X,2)*size(X,3) size(V_p,4)]);
+    V_p(V_p ==0) = nan;
+    Vm_p = mean(V_p,2,'omitnan');
+    
+    W_p = reshape(W_p,[size(X,1)*size(X,2)*size(X,3) size(W_p,4)]);
+    W_p(W_p ==0) = nan;
+    Wm_p = mean(W_p,2,'omitnan');
+    save(patchName,'U_p','Um_p','V_p','Vm_p', 'W_p','Wm_p','Flag','-v7.3');
+    
+    % computing fluctuating fields
+    u_p = U_p-Um_p;
+    u_p(isnan(u_p)) = 0;
+    v_p = V_p-Vm_p;
+    v_p(isnan(v_p)) = 0;
+    w_p = W_p-Wm_p;
+    w_p(isnan(w_p)) = 0;
+    
+    % computing spatial correlation matrix
+    clear U_p V_p W_p
+    uu = [u_p;v_p;w_p];
+   
+    C = uu*uu'; % spatial correaltion matrix
+    F_patched = [Flag;Flag;Flag];
+    N_occ = F_patched*F_patched';
+    C = C./N_occ;
+    C(N_occ < 500) = 0; % this to remove statistic not well converged
+    C(isnan(C))=0;
+    C(isinf(C))=0;
+
+    save('C','C','-v7.3');
+end
+fprintf('\n');
+disp('SVD...');
+[Phi,Eig,~]=randomizedSVD(C,rank,over);
+
+%% Plotting eigenvalue
+nm = 6;
+figure
+semilogx(diag(Eig_ref)./cumsum_ref(end)*100,'k-','linewidth',1.5,'markerfacecolor','r');
+hold on
+semilogx(diag(Eig)./cumsum_ref(end)*100,'r-','Linewidth',1.5);
+% semilogx(diag(Eig(1:nm,1:nm))./cumsum_ref(end)*100,'or');
+% semilogx(diag(Eig_ref(1:nm,1:nm))./cumsum_ref(end)*100,'ok'); uncomment
+% if you want to highlight the first nm modes like in the paper
+hold on
+% Add legend
+h=legend('$3D\,LPT$','$Robotic \, PIV$','interpreter','latex');
+set(h,'interpreter','latex','fontsize',10)
+% Add grid
+grid on
+% Add labels
+xlabel('Mode Number', 'interpreter', 'latex','Fontsize', 10);
+ylabel('$\% ~ of ~ energy $', 'interpreter', 'latex', 'fontsize', 10);
+set(gca, 'LabelFontSizeMultiplier', 1,'FontSize',10); % Default scaling
+set(gca,'ticklabelinterpreter','latex','fontsize',10)
+
+
